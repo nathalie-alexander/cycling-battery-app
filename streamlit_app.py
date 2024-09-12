@@ -236,7 +236,7 @@ def check_watts_decreasing(df):
 # Streamlit app starts here
 st.title('What happens to your energy levels while you cycle?')
 
-# st.image("data/cycling_cover.jpg")
+st.image("data/cycling_cover.JPG")
 
 st.info('This tool helps athletes better understand their '
         'endurance rides, which focus more on continuous individual effort than on tactics.', icon="ℹ️")
