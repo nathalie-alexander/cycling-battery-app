@@ -1,1 +1,8 @@
 streamlit
+pandas
+fitparse
+plotly
+datetime
+numpy
+scipy
+gpxpy
