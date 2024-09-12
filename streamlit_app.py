@@ -124,6 +124,8 @@ def read_gpx_file(uploaded_file):
         df['time_min'] = df['time_sec'] / 60
         df['time_h'] = df['time_min'] / 60
 
+    df['power'] = df['power'].fillna(0)
+
     return df
 
 
@@ -181,7 +183,7 @@ def get_interpolated_power_curve(df):
     interpolator = interp1d(df['Watts'], df['seconds'], kind='linear', fill_value="extrapolate")
 
     # Generate interpolated values for each Watt between the first and last entry
-    watts_range = np.arange(df['Watts'].min() * 0.8, df['Watts'].max() + 1)
+    watts_range = np.arange(int(df['Watts'].min() * 0.8), df['Watts'].max() + 1)
 
     # Interpolate seconds for each Watt
     interpolated_seconds = interpolator(watts_range)
@@ -204,6 +206,8 @@ def get_battery(df, interpolated_df):
     for val in df['power']:
         if val < interpolated_df['Watts'].min():
             battery.append(battery[-1])
+        elif val > interpolated_df['Watts'].max():
+            battery.append(battery[-1]-interpolated_df['drain'].max())
         else:
             battery_drain = interpolated_df.loc[interpolated_df['Watts'] == int(val), 'drain'].values[0]
             battery.append(battery[-1] - battery_drain)
