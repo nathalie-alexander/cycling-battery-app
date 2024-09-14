@@ -256,7 +256,7 @@ def check_watts_decreasing(df):
 
 # Streamlit app starts here
 st.title('What happens to your energy levels while you cycle?')
-
+st.write('test')
 st.info('We recommend the use of the Light colour scheme. This can be changed in the upper right corner.', icon="ℹ️")
 
 
