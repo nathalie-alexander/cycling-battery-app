@@ -195,7 +195,7 @@ def get_interpolated_power_curve(df):
     })
 
     # decrease sensitiviy by only dividing by 50% and not 100%
-    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 50
+    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 200
 
     return interpolated_df
 
@@ -256,7 +256,7 @@ def check_watts_decreasing(df):
 
 # Streamlit app starts here
 st.title('What happens to your energy levels while you cycle?')
-st.write('test')
+
 st.info('We recommend the use of the Light colour scheme. This can be changed in the upper right corner.', icon="ℹ️")
 
 
