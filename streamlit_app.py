@@ -183,7 +183,7 @@ def get_interpolated_power_curve(df):
     interpolator = interp1d(df['Watts'], df['seconds'], kind='linear', fill_value="extrapolate")
 
     # Generate interpolated values for each Watt between the first and last entry
-    watts_range = np.arange(int(df['Watts'].min() * 0.8), df['Watts'].max() + 1)
+    watts_range = np.arange(int(df['Watts'].min()), df['Watts'].max() + 1)
 
     # Interpolate seconds for each Watt
     interpolated_seconds = interpolator(watts_range)
@@ -194,14 +194,15 @@ def get_interpolated_power_curve(df):
         'Seconds': interpolated_seconds
     })
 
-    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 100
+    # decrease sensitiviy by only dividing by 50% and not 100%
+    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 50
 
     return interpolated_df
 
 
 @st.cache_data
 def get_battery(df, interpolated_df):
-    battery = [200]
+    battery = [100]
 
     for val in df['power']:
         if val < interpolated_df['Watts'].min():
@@ -215,6 +216,22 @@ def get_battery(df, interpolated_df):
     # Remove the last value
     return battery[:-1]
 
+
+@st.cache_data
+def append_slope(df):
+    # Define a window size for smoothing (e.g., 5 seconds)
+    window_size = 5
+
+    # Calculate the rolling mean of the 'battery' column
+    df['battery_smoothed'] = df['battery'].rolling(window=window_size, center=True).mean()
+
+    # Fill NaN values that result from the rolling operation (at the edges) with original data or forward fill
+    df['battery_smoothed'].fillna(df['battery'], inplace=True)
+
+    # Calculate the slope (difference) of the smoothed battery over time using the 'time_sec' column
+    df['battery_slope_smoothed'] = np.gradient(df['battery_smoothed'], df['time_sec'])
+
+    return df
 
 def get_battery_color(level):
     if level > 75:
@@ -417,15 +434,14 @@ st.caption("The black line shows your power curve, while colored lines refers to
 st.subheader("Your energy level")
 
 if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
-    # Read data from the uploaded .fit file
-    # st.write(uploaded_fit_file)
-
     with st.spinner('File is loading'):
         # df_raw = read_fit_file(uploaded_fit_file)
         if "fit" in uploaded_fit_file.name:
             df_raw = read_fit_file(uploaded_fit_file)
         else:
             df_raw = read_gpx_file(uploaded_fit_file)
+
+    st.sidebar.write(f"Time recording interval: {np.nanmedian(df_raw['time_sec'].diff())} sec")
 
     # smoothing slider
     smoothing = st.sidebar.slider('smoothing window for power (sec):', 1, 15, 5)
@@ -450,7 +466,15 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
 
     battery = get_battery(df, interpolated_df)
 
-    df['battery'] = pd.Series(battery) / 2
+    df['battery'] = battery
+
+    df = append_slope(df)
+
+    bat_slope = st.radio(
+        "Display battery level or slope:",
+        ["battery", "slope"],
+    )
+
 
     if df['battery'].min() < 0:
         battery_scale = df['battery'].min()
@@ -473,25 +497,50 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         )
     )
 
-    battery_fig.add_trace(
-        go.Scatter(
-            x=df['formatted_time'],
-            y=df['battery'],
-            mode='markers',
-            marker=dict(
-                color=df['battery'],  # Use battery values to color the line
-                colorscale='RdYlGn',  # Color scale from red (low) to green (high)
-                colorbar=dict(title="Battery (%)"),
-                cmin=0,  # Minimum value for scaling
-                cmax=100  # Maximum value for scaling
-            ),
-            name='Battery',
-            yaxis='y2',
-            hoverinfo='text',  # Hover information
-            hovertext=[f"{value:.1f}%" for value in df['battery']],
-            showlegend=True
+    if bat_slope=='battery':
+        battery_fig.add_trace(
+            go.Scatter(
+                x=df['formatted_time'],
+                y=df['battery'],
+                mode='markers',
+                marker=dict(
+                    color=df['battery'],  # Use battery values to color the line
+                    colorscale='RdYlGn',  # Color scale from red (low) to green (high)
+                    colorbar=dict(title="Battery (%)"),
+                    cmin=0,  # Minimum value for scaling
+                    cmax=100  # Maximum value for scaling
+                ),
+                name='Battery',
+                yaxis='y2',
+                hoverinfo='text',  # Hover information
+                hovertext=[f"{value:.1f}%" for value in df['battery']],
+                showlegend=True
+            )
         )
-    )
+    else:
+        # Normalize slope values for coloring: a steep drop is red, flat is green
+        cmin, cmax = df['battery_slope_smoothed'].min(), df['battery_slope_smoothed'].max()
+
+        battery_fig.add_trace(
+            go.Scatter(
+                x=df['formatted_time'],
+                y=df['battery'],
+                mode='markers',
+                marker=dict(
+                    color=df['battery_slope_smoothed'],  # Use slope values to color the line
+                    colorscale='RdYlGn',  # Color scale from red (steep negative) to green (flat)
+                    colorbar=dict(title="Slope of Battery (%)"),
+                    cmin=cmin,  # Minimum value for scaling
+                    cmax=cmax  # Maximum value for scaling
+                ),
+                name='Battery',
+                yaxis='y2',
+                hoverinfo='text',  # Hover information
+                hovertext=[f"{value:.1f}%" for value in df['battery']],
+                showlegend=True
+            )
+        )
+
 
     ftp_value = power_df.loc[power_df['seconds'] == 3600, 'Watts'].values[0]
 
@@ -535,8 +584,6 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         ),
         showlegend=True,
         hovermode='x unified',
-        # width=600,
-        # height=400,
     )
 
     # Display the plot in Streamlit
@@ -620,6 +667,91 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
 
     # Display the plot in Streamlit
     col2.plotly_chart(fig)
+
+    # histogramm
+    st.subheader('Power histogram')
+
+    bin_size = st.slider('Select the bin size for the histogram', min_value=5,max_value=70, step=5, value=20)
+    # Define bins using the sorted values from power_df['Watts']
+    bins = sorted(df['power'].tolist())
+
+    # Create a histogram with Plotly using predefined bins
+    fig = go.Figure()
+
+    fig.add_trace(go.Histogram(
+        x=df['power'],
+        xbins=dict(
+            start=bins[0],  
+            end=bins[-1],   
+            size=bin_size
+        ),
+        marker=dict(
+            color='darkturquoise'
+        ),
+        histnorm='percent',
+        name='ride',
+        hovertemplate='<b>%{x} W</b><br>%{y:.2f}%<extra></extra>'  
+    ))
+
+    # Add power curve
+    fig.add_trace(go.Scatter(
+        y=power_df['description'],  
+        x=power_df['Watts'],  
+        mode='lines+markers',  # Line with markers for interactivity
+        name='power curve',  # Name of the trace for the legend
+        line=dict(color='black', width=2),  # Line styling
+        marker=dict(size=5),  # Marker styling
+        hoverinfo='text',  # Hover information
+        hovertext=[f"{desc}: {value:.1f} W" for value, desc in zip(power_df['Watts'],power_df['description'])],
+        yaxis='y2'
+    ))
+
+    # Reverse the x-axis to display bins in decreasing order
+    fig.update_layout(
+        xaxis=dict(
+            title='Power (Watts)',
+            range=[bins[0],bins[-1]]
+        ),
+        yaxis=dict(
+            title='Percentage (%)',
+            tickfont=dict(color='darkturquoise',weight='bold'),
+            titlefont=dict(color='darkturquoise',weight='bold')),
+        yaxis2=dict(
+            overlaying='y',  # Overlay the secondary y-axis on the same plot
+            side='right',
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(color='black')
+        ),
+        bargap=0.2,  
+        legend=dict(
+            orientation="h",  # Horizontal legend
+            x=0.5,  # Center horizontally
+            xanchor="center",  # Align center
+            y=1.0,  # Position above the plot
+            yanchor="bottom"  # Anchor to bottom
+        ),
+        shapes=[  # Add a vertical dashed line
+            dict(
+                xref='x',
+                yref='y2',
+                type='line',
+                x0=ftp_value,
+                y0=-1,
+                x1=ftp_value,
+                y1=10,
+                line=dict(
+                    color='grey',
+                    width=2,
+                    dash='dash'  # Dashed line style
+                )
+            )
+        ]
+    )
+
+    # Display the plot
+    st.plotly_chart(fig)
+
 
     ### FTP section ----
     st.subheader("Your ride: power and a selected FTP treshhold")
@@ -815,4 +947,3 @@ elif not (power_df['Watts'] > 0).all():
 elif uploaded_fit_file is None:
     st.write("Please upload a FIT file (on the left side). Afterwards you can proceed with the analysis of your ride.")
 
-# farbige
