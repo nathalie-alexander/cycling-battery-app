@@ -195,7 +195,7 @@ def get_interpolated_power_curve(df):
     })
 
     # decrease sensitiviy by only dividing by 50% and not 100%
-    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 200
+    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 50
 
     return interpolated_df
 
