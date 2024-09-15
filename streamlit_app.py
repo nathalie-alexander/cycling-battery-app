@@ -10,6 +10,15 @@ import gpxpy
 
 @st.cache_data
 def read_fit_file(fit_file_path):
+    """
+    Reads a .fit file and extracts relevant data into a DataFrame.
+
+    Parameters:
+    fit_file_path (str): Path to the .fit file.
+
+    Returns:
+    pd.DataFrame: DataFrame containing extracted data with columns for time, power, altitude, distance, heart rate, latitude, and longitude.
+    """
     # Load the .fit file
     fitfile = FitFile(fit_file_path)
 
@@ -68,7 +77,7 @@ def read_fit_file(fit_file_path):
     df['time_sec'] = (df['time'] - df['time'].min()).dt.total_seconds()
     df['time_min'] = df['time_sec'] / 60
     df['time_h'] = df['time_min'] / 60
-    df['distance_km'] = df['distance'] / 60
+    df['distance_km'] = df['distance'] / 1000
 
     # drop the time column
     df.drop(columns='time', inplace=True)
@@ -77,9 +86,16 @@ def read_fit_file(fit_file_path):
 
 @st.cache_data
 def read_gpx_file(uploaded_file):
+    """
+    Reads a .gpx file and extracts relevant data into a DataFrame.
+
+    Parameters:
+    uploaded_file (UploadedFile): Uploaded .gpx file.
+
+    Returns:
+    pd.DataFrame: DataFrame containing extracted data with columns for time, latitude, longitude, altitude, power, heart rate, and distance.
+    """
     # Load the GPX file
-    # with open(gpx_file_path, 'r') as gpx_file:
-    #     gpx = gpxpy.parse(gpx_file)
     gpx = gpxpy.parse(uploaded_file.read().decode("utf-8"))
 
     # Extract data from the file
@@ -89,13 +105,17 @@ def read_gpx_file(uploaded_file):
         'longitude': [],
         'altitude': [],
         'power': [],
-        'heart_rate': []
+        'heart_rate': [],
+        'distance': []
     }
+
+    # Initialize distance
+    total_distance = 0
 
     # Loop through all track points
     for track in gpx.tracks:
         for segment in track.segments:
-            for point in segment.points:
+            for i, point in enumerate(segment.points):
                 data['time'].append(point.time)
                 data['latitude'].append(point.latitude)
                 data['longitude'].append(point.longitude)
@@ -115,6 +135,12 @@ def read_gpx_file(uploaded_file):
                 data['power'].append(power)
                 data['heart_rate'].append(heart_rate)
 
+                # Calculate distance
+                if i > 0:
+                    prev_point = segment.points[i - 1]
+                    total_distance += point.distance_3d(prev_point)
+                data['distance'].append(total_distance)
+
     # Convert data to DataFrame
     df = pd.DataFrame(data)
 
@@ -125,12 +151,23 @@ def read_gpx_file(uploaded_file):
         df['time_h'] = df['time_min'] / 60
 
     df['power'] = df['power'].fillna(0)
+    df['distance_km'] = df['distance'] / 1000
 
     return df
 
 
 @st.cache_data
 def get_reference_power_data(gender, unit_sel):
+    """
+    Retrieves reference power data based on gender and unit selection.
+
+    Parameters:
+    gender (str): Gender of the athlete ('male' or 'female').
+    unit_sel (str): Unit selection ('Watts' or 'Watts/kg').
+
+    Returns:
+    pd.DataFrame: DataFrame containing reference power data with columns for description, seconds, and percentiles.
+    """
     power_df = pd.read_csv(f'data/reference_power_curve_{gender}.csv')
     power_unit = power_df.copy()
     if unit_sel == 'Watts':
@@ -171,6 +208,15 @@ def get_reference_power_data(gender, unit_sel):
 
 
 def format_time(hour):
+    """
+    Formats a time value in hours to a string in the format HH:MM:SS.
+
+    Parameters:
+    hour (float): Time value in hours.
+
+    Returns:
+    str: Formatted time string in the format HH:MM:SS.
+    """
     hours = int(hour)  # Get the hour part
     minutes = int((hour - hours) * 60)  # Convert the decimal part to minutes
     seconds = int(((hour - hours) * 60 - minutes) * 60)  # Convert the remaining decimal part to seconds
@@ -178,12 +224,23 @@ def format_time(hour):
 
 
 @st.cache_data
-def get_interpolated_power_curve(df):
+def get_interpolated_power_curve(df, sensitivity=50, treshold=0.8):
+    """
+    Generates an interpolated power curve based on the input DataFrame.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing power curve data.
+    sensitivity (int): Sensitivity adjustment for battery drain.
+    treshold (float): Threshold for battery draining in percentage of FTP.
+
+    Returns:
+    pd.DataFrame: DataFrame containing interpolated power curve data with columns for Watts, Seconds, and drain.
+    """
     # Create the interpolation function
     interpolator = interp1d(df['Watts'], df['seconds'], kind='linear', fill_value="extrapolate")
 
     # Generate interpolated values for each Watt between the first and last entry
-    watts_range = np.arange(int(df['Watts'].min()), df['Watts'].max() + 1)
+    watts_range = np.arange(int(df['Watts'].min()) * treshold, df['Watts'].max() + 1)
 
     # Interpolate seconds for each Watt
     interpolated_seconds = interpolator(watts_range)
@@ -194,21 +251,31 @@ def get_interpolated_power_curve(df):
         'Seconds': interpolated_seconds
     })
 
-    # decrease sensitiviy by only dividing by 50% and not 100%
-    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * 50
+    # adjust sensitivity
+    interpolated_df['drain'] = 1 / interpolated_df['Seconds'] * sensitivity
 
     return interpolated_df
 
 
 @st.cache_data
 def get_battery(df, interpolated_df):
+    """
+    Calculates the battery level based on power data and interpolated power curve.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing power data.
+    interpolated_df (pd.DataFrame): DataFrame containing interpolated power curve data.
+
+    Returns:
+    list: List of battery levels.
+    """
     battery = [100]
 
     for val in df['power']:
         if val < interpolated_df['Watts'].min():
             battery.append(battery[-1])
         elif val > interpolated_df['Watts'].max():
-            battery.append(battery[-1]-interpolated_df['drain'].max())
+            battery.append(battery[-1] - interpolated_df['drain'].max())
         else:
             battery_drain = interpolated_df.loc[interpolated_df['Watts'] == int(val), 'drain'].values[0]
             battery.append(battery[-1] - battery_drain)
@@ -219,21 +286,39 @@ def get_battery(df, interpolated_df):
 
 @st.cache_data
 def append_slope(df):
+    """
+    Appends the slope of the battery level to the DataFrame.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing battery data.
+
+    Returns:
+    pd.DataFrame: DataFrame with appended battery slope and smoothed battery slope.
+    """
     # Define a window size for smoothing (e.g., 5 seconds)
     window_size = 5
 
+    # Calculate the slope (difference) of the battery over time using the 'time_sec' column
+    df['battery_slope'] = np.gradient(df['battery'], df['time_sec'])
+
     # Calculate the rolling mean of the 'battery' column
-    df['battery_smoothed'] = df['battery'].rolling(window=window_size, center=True).mean()
+    df['battery_slope_smoothed'] = df['battery_slope'].rolling(window=window_size, center=True).mean()
 
     # Fill NaN values that result from the rolling operation (at the edges) with original data or forward fill
-    df['battery_smoothed'].fillna(df['battery'], inplace=True)
-
-    # Calculate the slope (difference) of the smoothed battery over time using the 'time_sec' column
-    df['battery_slope_smoothed'] = np.gradient(df['battery_smoothed'], df['time_sec'])
+    # df['battery_slope_smoothed'].fillna(df['battery'], inplace=True)
 
     return df
 
 def get_battery_color(level):
+    """
+    Determines the color of the battery level based on its value.
+
+    Parameters:
+    level (float): Battery level.
+
+    Returns:
+    str: Color representing the battery level.
+    """
     if level > 75:
         return "green"
     elif level > 50:
@@ -245,6 +330,15 @@ def get_battery_color(level):
 
 
 def check_watts_decreasing(df):
+    """
+    Checks if the 'Watts' values in the DataFrame are monotonically decreasing with increasing time duration.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing power data.
+
+    Returns:
+    bool: True if 'Watts' values are monotonically decreasing, False otherwise.
+    """
     # Sort the DataFrame by the 'seconds' column
     sorted_df = df.sort_values(by='seconds')
 
@@ -270,20 +364,13 @@ uploaded_fit_file = st.sidebar.file_uploader("**Upload your ride**", type=["fit"
 
 # Power curve ----
 st.subheader('Power curve')
-input_df = pd.DataFrame(
-    [
-        {"seconds": 5, "description": "5 sec", "Watts": 0},
-        {"seconds": 10, "description": "10 sec", "Watts": 0},
-        {"seconds": 30, "description": "30 sec", "Watts": 0},
-        {"seconds": 60, "description": "1 min", "Watts": 0},
-        {"seconds": 300, "description": "5 min", "Watts": 0},
-        {"seconds": 480, "description": "8 min", "Watts": 0},
-        {"seconds": 720, "description": "12 min", "Watts": 0},
-        {"seconds": 1200, "description": "20 min", "Watts": 0},
-        {"seconds": 2400, "description": "40 min", "Watts": 0},
-        {"seconds": 3600, "description": "60 min", "Watts": 0}
-    ]
-)
+
+# Empty data for the power curve
+input_df = pd.DataFrame({
+    "seconds": [5, 10, 30, 60, 300, 480, 720, 1200, 2400, 3600],
+    "description": ["5 sec", "10 sec", "30 sec", "1 min", "5 min", "8 min", "12 min", "20 min", "40 min", "60 min"],
+    "Watts": [0] * 10
+})
 
 # Create two columns in Streamlit layout
 col1, col2 = st.columns([1.5, 3], vertical_alignment='top')
@@ -413,9 +500,7 @@ fig.add_trace(go.Scatter(
 # Customize layout
 fig.update_layout(
     title="Power Curve",
-    legend=dict(
-        title=dict(text='Percentiles and your data')  # Add legend title here
-    ),
+    legend=dict(title=dict(text='Percentiles and your data')),
     xaxis_title="Time Duration",
     yaxis_title=y_axis_selection,
     width=600,
@@ -430,12 +515,12 @@ st.caption("The black line shows your power curve, while colored lines refers to
            "of riders of the selected gender based on the data from David Johnstone: "
            "https://www.cyclinganalytics.com/blog/2018/06/how-does-your-cycling-power-output-compare")
 
-# battery section -------------------------------------------
-st.subheader("Your energy level")
+# ride statistics
+st.subheader("Ride statistics")
+
 
 if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     with st.spinner('File is loading'):
-        # df_raw = read_fit_file(uploaded_fit_file)
         if "fit" in uploaded_fit_file.name:
             df_raw = read_fit_file(uploaded_fit_file)
         else:
@@ -449,10 +534,28 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     df = df_raw.copy()  # Create a copy to avoid modifying the original DataFrame
 
     # Apply rolling mean only to the 'power' column
-    df['power'] = df_raw['power'].rolling(window=smoothing, min_periods=1).mean()
+    df[['power','altitude']] = df_raw[['power','altitude']].rolling(window=smoothing, min_periods=1).mean()
+
+    # Calculate the difference between consecutive altitude points
+    df['altitude_diff'] = df['altitude'].diff()
+
+    # Filter for positive differences (only uphill climbs)
+    elevation_gain = df[df['altitude_diff'] > 0]['altitude_diff'].sum()
 
     # Format the time
     df['formatted_time'] = df['time_h'].apply(format_time)
+
+    col1,col2,col3 = st.columns(3)
+    col1.metric("Distance (km)", f"{df['distance_km'].max():.1f}")
+    col3.metric("Elevation gain (m)", f"{elevation_gain:.0f}")
+    col2.metric("Average power (W)", f"{df['power'].mean():.1f}")
+    col1.metric("Average speed (km/h)", f"{df['distance_km'].max() / df['time_h'].max():.1f}")
+    col2.metric("Max power (W)", f"{df['power'].max():.1f}")
+    col3.metric("Duration (h)", f"{df['formatted_time'].max()}")
+
+
+    # battery section -------------------------------------------
+    st.subheader("Your energy level")
 
     st.session_state.time_range_display = (
         df['formatted_time'].iloc[0], df['formatted_time'].iloc[-1])
@@ -462,24 +565,29 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     st.sidebar.map(map_data)
 
     # battery
-    interpolated_df = get_interpolated_power_curve(power_df)
+    col1, col2 = st.columns([1, 1], vertical_alignment="center")
+    bat_slope = col1.radio(
+        "Display battery level or slope:",
+        ["battery", "slope"])
 
-    battery = get_battery(df, interpolated_df)
+    if bat_slope == 'battery':
+        col2.write("Battery sensitivity adjustments (for testing purposes)")
+        col2.caption("Defaults values are set to 50% sensitivity and 80% FTP treshold.")
+        sensitivity = col2.slider("Battery drain sensitivity", 10, 100, value=50, help="Adjust the battery drain sensitivity (i.e. 100% = 1 sec at 5sec power = 20% drain)")
+        treshold = col2.slider("Battery draining treshold (% FTP)", 50, 100, value=80, help="Adjust the battery draining treshold in % of FTP. This means that below this power level the battery will not drain.")
+        treshold = treshold / 100
+        interpolated_df = get_interpolated_power_curve(power_df,sensitivity, treshold)
+    else:
+        interpolated_df = get_interpolated_power_curve(power_df)
 
-    df['battery'] = battery
+
+    # Calculate the battery level
+    df['battery'] = get_battery(df, interpolated_df)
 
     df = append_slope(df)
 
-    bat_slope = st.radio(
-        "Display battery level or slope:",
-        ["battery", "slope"],
-    )
-
-
-    if df['battery'].min() < 0:
-        battery_scale = df['battery'].min()
-    else:
-        battery_scale = 0
+    # Determine the scale for the battery plot
+    battery_scale = df['battery'].min() if df['battery'].min() < 0 else 0
 
     # Create a figure with secondary y-axis
     battery_fig = go.Figure()
@@ -527,6 +635,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
                 y=df['battery'],
                 mode='markers',
                 marker=dict(
+                    size=3,
                     color=df['battery_slope_smoothed'],  # Use slope values to color the line
                     colorscale='RdYlGn',  # Color scale from red (steep negative) to green (flat)
                     colorbar=dict(title="Slope of Battery (%)"),
@@ -536,7 +645,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
                 name='Battery',
                 yaxis='y2',
                 hoverinfo='text',  # Hover information
-                hovertext=[f"{value:.1f}%" for value in df['battery']],
+                hovertext=[f"Battery level: {value:.1f}%" for value in df['battery']],
                 showlegend=True
             )
         )
@@ -572,8 +681,6 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             showgrid=False,
             zeroline=False,
             range=[battery_scale, 105]
-            # showticklabels=False
-            # tickfont=dict(color='blue')
         ),
         legend=dict(
             orientation="h",  # Horizontal legend
@@ -645,10 +752,10 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         yanchor='middle'  # Middle alignment
     )
 
-    # Update layout to remove gridlines and axes
+    # Update layout
     fig.update_layout(
         xaxis=dict(
-            range=[-5, 110],  # Adjust range to show the cap
+            range=[-5, 110],  
             showgrid=False,
             zeroline=False,
             showticklabels=False
@@ -671,51 +778,68 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     # histogramm
     st.subheader('Power histogram')
 
-    bin_size = st.slider('Select the bin size for the histogram', min_value=5,max_value=70, step=5, value=20)
-    # Define bins using the sorted values from power_df['Watts']
-    bins = sorted(df['power'].tolist())
+    radio_time_perc = st.radio('Show time or percentage:', ['Time (sec)', 'Percentage'],index=1)
+
+    bin_size = st.slider('Select the bin size for the histogram', min_value=5, max_value=70, step=5, value=20)
+
+    # Define bins using the bin size
+    max_power = df['power'].max()
+    bins = np.arange(0, max_power + bin_size, bin_size)
 
     # Create a histogram with Plotly using predefined bins
     fig = go.Figure()
 
-    fig.add_trace(go.Histogram(
-        x=df['power'],
-        xbins=dict(
-            start=bins[0],  
-            end=bins[-1],   
-            size=bin_size
-        ),
-        marker=dict(
-            color='darkturquoise'
-        ),
-        histnorm='percent',
-        name='ride',
-        hovertemplate='<b>%{x} W</b><br>%{y:.2f}%<extra></extra>'  
-    ))
+    if 'Time' in radio_time_perc:
+        y_title = 'Time (seconds)'
+        hist = go.Histogram(
+            x=df['power'],
+            xbins=dict(
+                start=bins[0],
+                end=bins[-1],
+                size=bin_size
+            ),
+            marker=dict(color='darkturquoise'),
+            name='ride',
+            hovertemplate='<b>%{x} W</b><br>%{y:.0f} sec<extra></extra>'  # Display cumulative time in minutes
+        )
+        fig.add_trace(hist)
+    else:
+        y_title = 'Percentage (%)'
+        fig.add_trace(go.Histogram(
+            x=df['power'],
+            xbins=dict(
+                start=bins[0],
+                end=bins[-1],
+                size=bin_size
+            ),
+            marker=dict(color='darkturquoise'),
+            histnorm='percent',
+            name='ride',
+            hovertemplate='<b>%{x} W</b><br>%{y:.1f}%<extra></extra>'
+        ))
 
     # Add power curve
     fig.add_trace(go.Scatter(
-        y=power_df['description'],  
-        x=power_df['Watts'],  
+        y=power_df['description'],
+        x=power_df['Watts'],
         mode='lines+markers',  # Line with markers for interactivity
         name='power curve',  # Name of the trace for the legend
         line=dict(color='black', width=2),  # Line styling
         marker=dict(size=5),  # Marker styling
         hoverinfo='text',  # Hover information
-        hovertext=[f"{desc}: {value:.1f} W" for value, desc in zip(power_df['Watts'],power_df['description'])],
+        hovertext=[f"{desc}: {value:.1f} W" for value, desc in zip(power_df['Watts'], power_df['description'])],
         yaxis='y2'
     ))
 
-    # Reverse the x-axis to display bins in decreasing order
     fig.update_layout(
         xaxis=dict(
             title='Power (Watts)',
-            range=[bins[0],bins[-1]]
+            range=[bins[0], bins[-1]]
         ),
         yaxis=dict(
-            title='Percentage (%)',
-            tickfont=dict(color='darkturquoise',weight='bold'),
-            titlefont=dict(color='darkturquoise',weight='bold')),
+            title=y_title,
+            tickfont=dict(color='darkturquoise', weight='bold'),
+            titlefont=dict(color='darkturquoise', weight='bold')),
         yaxis2=dict(
             overlaying='y',  # Overlay the secondary y-axis on the same plot
             side='right',
@@ -723,7 +847,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             zeroline=False,
             tickfont=dict(color='black')
         ),
-        bargap=0.2,  
+        bargap=0.2,
         legend=dict(
             orientation="h",  # Horizontal legend
             x=0.5,  # Center horizontally
@@ -756,8 +880,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     ### FTP section ----
     st.subheader("Your ride: power and a selected FTP treshhold")
     st.caption("FTP is a cycling metric that stands for Functional Threshold Power. "
-               "It represents an approximation of your maximal lactate steady state, "
-               "measured in watts.")
+               "It is considered as the power output, measured in Watts, a rider can sustain for one hour.")
 
     col1, col2 = st.columns([1, 2.5], vertical_alignment="center", gap='medium')
 
