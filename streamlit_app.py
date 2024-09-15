@@ -240,7 +240,7 @@ def get_interpolated_power_curve(df, sensitivity=50, treshold=0.8):
     interpolator = interp1d(df['Watts'], df['seconds'], kind='linear', fill_value="extrapolate")
 
     # Generate interpolated values for each Watt between the first and last entry
-    watts_range = np.arange(int(df['Watts'].min()) * treshold, df['Watts'].max() + 1)
+    watts_range = np.arange(int(df['Watts'].min()* treshold) , df['Watts'].max() + 1)
 
     # Interpolate seconds for each Watt
     interpolated_seconds = interpolator(watts_range)
@@ -565,21 +565,22 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     st.sidebar.map(map_data)
 
     # battery
-    col1, col2 = st.columns([1, 1], vertical_alignment="center")
+    col1, col2 = st.columns([1, 3], vertical_alignment="top")
     bat_slope = col1.radio(
-        "Display battery level or slope:",
+        "Choose the color scale:",
         ["battery", "slope"])
 
     if bat_slope == 'battery':
         col2.write("Battery sensitivity adjustments (for testing purposes)")
         col2.caption("Defaults values are set to 50% sensitivity and 80% FTP treshold.")
-        sensitivity = col2.slider("Battery drain sensitivity", 10, 100, value=50, help="Adjust the battery drain sensitivity (i.e. 100% = 1 sec at 5sec power = 20% drain)")
-        treshold = col2.slider("Battery draining treshold (% FTP)", 50, 100, value=80, help="Adjust the battery draining treshold in % of FTP. This means that below this power level the battery will not drain.")
+        with col2:
+            nested_col1, nested_col2 = st.columns(2,gap='medium')
+        sensitivity = nested_col1.slider("Battery drain sensitivity", 10, 100, value=50, step=5, help="Adjust the battery drain sensitivity (i.e. 100% = 1 sec at 5sec power = 20% drain)")
+        treshold = nested_col2.slider("Battery draining treshold (% FTP)", 50, 100, value=80, step=5, help="Adjust the battery draining treshold in % of FTP. This means that below this power level the battery will not drain.")
         treshold = treshold / 100
         interpolated_df = get_interpolated_power_curve(power_df,sensitivity, treshold)
     else:
         interpolated_df = get_interpolated_power_curve(power_df)
-
 
     # Calculate the battery level
     df['battery'] = get_battery(df, interpolated_df)
@@ -777,10 +778,11 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
 
     # histogramm
     st.subheader('Power histogram')
+    col1, col2 = st.columns([1, 1])
 
-    radio_time_perc = st.radio('Show time or percentage:', ['Time (sec)', 'Percentage'],index=1)
+    radio_time_perc = col1.radio('Show time or percentage:', ['Percentage','Time (sec)'])
 
-    bin_size = st.slider('Select the bin size for the histogram', min_value=5, max_value=70, step=5, value=20)
+    bin_size = col2.slider('Select the bin size for the histogram', min_value=5, max_value=70, step=5, value=20)
 
     # Define bins using the bin size
     max_power = df['power'].max()
