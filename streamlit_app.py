@@ -285,6 +285,32 @@ def get_battery(df, interpolated_df):
 
 
 @st.cache_data
+def get_energy_battery(df, interpolated_df):
+    """
+    Calculates the battery level based on the energy W' on basis of the power data and interpolated power curve.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing power data.
+    interpolated_df (pd.DataFrame): DataFrame containing interpolated power curve data.
+
+    Returns:
+    list: List of battery levels.
+    """
+    energy = np.trapezoid(interpolated_df['Watts'])
+    battery = [energy]
+
+    for val in df['power']:
+        if val < interpolated_df['Watts'].min():
+            battery.append(battery[-1])
+        else:
+            battery_drain = val-interpolated_df['Watts'].min()
+            battery.append(battery[-1] - battery_drain)
+
+    # Remove the last value and normalize to percentage
+    return np.array(battery[:-1]) / energy * 100
+
+
+@st.cache_data
 def append_slope(df):
     """
     Appends the slope of the battery level to the DataFrame.
@@ -564,26 +590,40 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     map_data = df[['latitude', 'longitude']]
     st.sidebar.map(map_data)
 
-    # battery
-    col1, col2 = st.columns([1, 3], vertical_alignment="top")
-    bat_slope = col1.radio(
-        "Choose the color scale:",
-        ["battery", "slope"])
+    # battery model 
+    st.caption("Both battery models are displayed as a percentage and both consider the power duration relationship, but the calculation behind it differs. " 
+               "The 'Percent' model is based on a percentage drain and the 'Energy' model is on the basis of the Critical Power (CP) and W', thus it calculates the individual available energy and "
+               "substracts the Watts above the CP from the energy.")
 
-    if bat_slope == 'battery':
+    col1, col2 = st.columns([1, 3], vertical_alignment="top")
+    battery_model = col1.radio("Choose the battery model:", ["Percent", "Energy"])
+        
+    bat_slope = col1.radio(
+            "Choose the color scale:",
+            ["battery", "slope"])
+    
+    with col2:
+            nested_col1, nested_col2 = st.columns(2,gap='medium')
+    
+    if battery_model == 'Percent':
         col2.write("Battery sensitivity adjustments (for testing purposes)")
         col2.caption("Defaults values are set to 50% sensitivity and 80% FTP treshold.")
-        with col2:
-            nested_col1, nested_col2 = st.columns(2,gap='medium')
+        
         sensitivity = nested_col1.slider("Battery drain sensitivity", 10, 100, value=50, step=5, help="Adjust the battery drain sensitivity (i.e. 100% = 1 sec at 5sec power = 20% drain)")
         treshold = nested_col2.slider("Battery draining treshold (% FTP)", 50, 100, value=80, step=5, help="Adjust the battery draining treshold in % of FTP. This means that below this power level the battery will not drain.")
         treshold = treshold / 100
         interpolated_df = get_interpolated_power_curve(power_df,sensitivity, treshold)
-    else:
-        interpolated_df = get_interpolated_power_curve(power_df)
 
-    # Calculate the battery level
-    df['battery'] = get_battery(df, interpolated_df)
+        # Calculate the battery level
+        df['battery'] = get_battery(df, interpolated_df)
+    else:
+        treshold = col2.slider("Considered Critical Power value (in % of FTP)", 50, 150, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that above this power level the energy will be drained.")
+        treshold = treshold / 100
+        interpolated_df = get_interpolated_power_curve(power_df,100, treshold)
+        col2.caption(f"considered Critical Power: {interpolated_df['Watts'].min()} W")
+
+        # Calculate the battery level
+        df['battery'] = get_energy_battery(df, interpolated_df)
 
     df = append_slope(df)
 
