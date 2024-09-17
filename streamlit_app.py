@@ -860,7 +860,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     st.subheader('Power histogram')
     col1, col2 = st.columns([1, 1])
 
-    radio_time_perc = col1.radio('Show time or percentage:', ['Percentage','Time (sec)'])
+    radio_time_perc = col1.radio('Show time or percentage:', ['Percentage','Time (min)'])
 
     bin_size = col2.slider('Select the bin size for the histogram', min_value=5, max_value=70, step=5, value=20)
 
