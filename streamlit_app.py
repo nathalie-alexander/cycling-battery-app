@@ -224,14 +224,14 @@ def format_time(hour):
 
 
 @st.cache_data
-def get_interpolated_power_curve(df, sensitivity=50, treshold=0.8):
+def get_interpolated_power_curve(df, sensitivity=50, threshold=0.8):
     """
     Generates an interpolated power curve based on the input DataFrame.
 
     Parameters:
     df (pd.DataFrame): DataFrame containing power duration data.
     sensitivity (int): Sensitivity adjustment for battery drain.
-    treshold (float): Threshold for battery draining in percentage of FTP.
+    threshold (float): Threshold for battery draining in percentage of FTP.
 
     Returns:
     pd.DataFrame: DataFrame containing interpolated power duration data with columns for Watts, Seconds, and drain.
@@ -240,7 +240,7 @@ def get_interpolated_power_curve(df, sensitivity=50, treshold=0.8):
     interpolator = interp1d(df['Watts'], df['seconds'], kind='linear', fill_value="extrapolate")
 
     # Generate interpolated values for each Watt between the first and last entry
-    watts_range = np.arange(int(df['Watts'].min()* treshold) , df['Watts'].max() + 1)
+    watts_range = np.arange(int(df['Watts'].min()* threshold) , df['Watts'].max() + 1)
 
     # Interpolate seconds for each Watt
     interpolated_seconds = interpolator(watts_range)
@@ -528,7 +528,11 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             df_raw = read_gpx_file(uploaded_fit_file)
 
     st.sidebar.write(f"Time recording interval: {np.nanmedian(df_raw['time_sec'].diff())} sec")
-
+    
+    if np.nanmedian(df_raw['time_sec'].diff())>1:
+        st.sidebar.warning("Currently the dashboard is set up for data with a recording interval of 1 sec.")
+    
+    
     # smoothing slider
     smoothing = st.sidebar.slider('smoothing window for power (sec):', 1, 15, 5)
 
@@ -583,12 +587,12 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         
         if battery_model == 'Percent':
             col2.write("Battery sensitivity adjustments (for testing purposes)")
-            col2.caption("Defaults values are set to 50% sensitivity and 80% FTP treshold.")
+            col2.caption("Defaults values are set to 50% sensitivity and 80% FTP threshold.")
             
             sensitivity = nested_col1.slider("Battery drain sensitivity", 10, 100, value=50, step=5, help="Adjust the battery drain sensitivity (i.e. 100% = 1 sec at 5sec power = 20% drain)")
-            treshold = nested_col2.slider("Battery draining treshold (% FTP)", 50, 100, value=80, step=5, help="Adjust the battery draining treshold in % of FTP. This means that below this power level the battery will not drain.")
-            treshold = treshold / 100
-            interpolated_df = get_interpolated_power_curve(power_df,sensitivity, treshold)
+            threshold = nested_col2.slider("Battery draining threshold (% FTP)", 50, 100, value=80, step=5, help="Adjust the battery draining threshold in % of FTP. This means that below this power level the battery will not drain.")
+            threshold = threshold / 100
+            interpolated_df = get_interpolated_power_curve(power_df,sensitivity, threshold)
 
             # Calculate the battery level
             df['battery'] = get_battery(df, interpolated_df)
@@ -597,8 +601,8 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             dashed_line_name = 'FTP'
         elif battery_model == 'Energy':
             col2.write("Energy E0 and Power P0 are calculated as the intercept and slope of the energy over time, respectively.")
-            cp_treshold = col2.slider("Value where the battery recharges (% Critical Power)", 50, 100, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that below this power level the battery will recharge.")
-            cp_treshold = cp_treshold / 100
+            cp_threshold = col2.slider("Value where the battery recharges (% Critical Power)", 50, 100, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that below this power level the battery will recharge.")
+            cp_threshold = cp_threshold / 100
             power_df['energy'] = power_df['Watts'] * power_df['seconds']
 
             # intercept = energy and slope = critical power
@@ -607,12 +611,12 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             battery = [energy]
 
             for val in df['power']:
-                if val < cp*cp_treshold or val >= cp:
+                if val < cp*cp_threshold or val >= cp:
                     battery.append(battery[-1] + (cp - val))
                 else:
                     battery.append(battery[-1])
 
-            col2.caption(f"Energy (E0): {energy/1000:.1f} kJ, Power P0: {cp:.1f} W, Recharge treshold: {cp*cp_treshold:.1f} W")
+            col2.caption(f"Energy (E0): {energy/1000:.1f} kJ, Power P0: {cp:.1f} W, Recharge threshold: {cp*cp_threshold:.1f} W")
             
             battery = battery[:-1] / energy * 100
             df['battery'] = battery
@@ -623,8 +627,8 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             col2.write("Critical Power (CP) and W' are calculated based on the 1 min, 5min and 12 min efforts. "
                         "CP and W' are calculated as the intercept and slope of the power over 1/time, respectively.")
             
-            cp_treshold = col2.slider("Value where the battery recharges (% Critical Power)", 0, 100, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that below this power level the battery will recharge.")
-            cp_treshold = cp_treshold / 100
+            cp_threshold = col2.slider("Value where the battery recharges (% Critical Power)", 0, 100, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that below this power level the battery will recharge.")
+            cp_threshold = cp_threshold / 100
             
             times = [60, 300, 720]
             x = 1 / np.array(times)
@@ -636,12 +640,12 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             battery = [energy]
 
             for val in df['power']:
-                if val < cp*cp_treshold or val >= cp:
+                if val < cp*cp_threshold or val >= cp:
                     battery.append(battery[-1] + (cp - val))
                 else:
                     battery.append(battery[-1])
 
-            col2.caption(f"Energy (W'): {energy/1000:.1f} kJ, CP: {cp:.1f} W, Recharge treshold: {cp*cp_treshold:.1f} W")
+            col2.caption(f"Energy (W'): {energy/1000:.1f} kJ, CP: {cp:.1f} W, Recharge threshold: {cp*cp_threshold:.1f} W")
             
             battery = battery[:-1] / energy * 100
             df['battery'] = battery
@@ -731,15 +735,15 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         showlegend=True
     )
 
-    if battery_model in ['Energy', 'Critical Power'] and cp_treshold < 1:
+    if battery_model in ['Energy', 'Critical Power'] and cp_threshold < 1:
         battery_fig.add_shape(
             type="line",
             x0=df['formatted_time'].min(),  # Start from the minimum time
             x1=df['formatted_time'].max(),  # End at the maximum time
-            y0=dashed_line_val*cp_treshold,  
-            y1=dashed_line_val*cp_treshold,  
+            y0=dashed_line_val*cp_threshold,  
+            y1=dashed_line_val*cp_threshold,  
             line=dict(color="grey", width=2, dash="dash"),  # Line properties
-            name='Recharge treshold',
+            name='Recharge threshold',
             showlegend=True
         )
 
@@ -972,7 +976,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
 
 
     ### FTP section ----
-    st.subheader("Your ride: power and a selected FTP treshhold")
+    st.subheader("Your ride: power and a selected FTP threshold")
     st.caption("FTP is a cycling metric that stands for Functional Threshold Power. "
                "It is considered as the power output, measured in Watts, a rider can sustain for one hour.")
 
@@ -986,7 +990,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     # FTP percentage input
     ftp_perc = col2.slider('Choose the percentage of FTP', 1, 125, 80)
 
-    # selected ftp treshhold
+    # selected ftp threshold
     ftp_sel = ftp * ftp_perc / 100
 
     # Create two columns in Streamlit layout
@@ -1129,14 +1133,14 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     # Display the interactive plot
     col_plot.plotly_chart(ftp_fig, use_container_width=True, on_select="rerun")
 
-    # metric above/below Treshhold
+    # metric above/below threshold
     col1, col2 = st.columns(2)
 
     with col_metric:
         st.markdown(
             f"""
                 <div style='text-align: center;'>
-                    <p style='margin: 0;'>above treshhold</p>
+                    <p style='margin: 0;'>above threshold</p>
                     <h2 style='display: inline; font-size: 2.5em;'> 
                         <span style='color: red;'>{above_threshold.shape[0] / filtered_df.shape[0] * 100:.1f}%</span>
                     </h2>
@@ -1150,7 +1154,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         st.markdown(
             f"""
                 <div style='text-align: center;'>
-                    <p style='margin: 0;'>below treshhold</p>
+                    <p style='margin: 0;'>below threshold</p>
                     <h2 style='display: inline; font-size: 2.5em;'> 
                         <span style='color: green;'>{below_threshold.shape[0] / filtered_df.shape[0] * 100:.1f}%</span>
                     </h2>
