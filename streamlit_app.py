@@ -229,12 +229,12 @@ def get_interpolated_power_curve(df, sensitivity=50, treshold=0.8):
     Generates an interpolated power curve based on the input DataFrame.
 
     Parameters:
-    df (pd.DataFrame): DataFrame containing power curve data.
+    df (pd.DataFrame): DataFrame containing power duration data.
     sensitivity (int): Sensitivity adjustment for battery drain.
     treshold (float): Threshold for battery draining in percentage of FTP.
 
     Returns:
-    pd.DataFrame: DataFrame containing interpolated power curve data with columns for Watts, Seconds, and drain.
+    pd.DataFrame: DataFrame containing interpolated power duration data with columns for Watts, Seconds, and drain.
     """
     # Create the interpolation function
     interpolator = interp1d(df['Watts'], df['seconds'], kind='linear', fill_value="extrapolate")
@@ -283,31 +283,6 @@ def get_battery(df, interpolated_df):
     # Remove the last value
     return battery[:-1]
 
-
-@st.cache_data
-def get_energy_battery(df, interpolated_df):
-    """
-    Calculates the battery level based on the energy W' on basis of the power data and interpolated power curve.
-
-    Parameters:
-    df (pd.DataFrame): DataFrame containing power data.
-    interpolated_df (pd.DataFrame): DataFrame containing interpolated power curve data.
-
-    Returns:
-    list: List of battery levels.
-    """
-    energy = np.trapezoid(interpolated_df['Watts'])
-    battery = [energy]
-
-    for val in df['power']:
-        if val < interpolated_df['Watts'].min():
-            battery.append(battery[-1])
-        else:
-            battery_drain = val-interpolated_df['Watts'].min()
-            battery.append(battery[-1] - battery_drain)
-
-    # Remove the last value and normalize to percentage
-    return np.array(battery[:-1]) / energy * 100
 
 
 @st.cache_data
@@ -389,7 +364,7 @@ st.write('This tool helps athletes better understand their '
 uploaded_fit_file = st.sidebar.file_uploader("**Upload your ride**", type=["fit","gpx"])
 
 # Power curve ----
-st.subheader('Power curve')
+st.subheader('Power duration curve')
 
 # Empty data for the power curve
 input_df = pd.DataFrame({
@@ -404,7 +379,7 @@ col1, col2 = st.columns([1.5, 3], vertical_alignment='top')
 col2.markdown("**Upload a previously exported CSV**")
 
 # File upload section
-uploaded_power_curve = col2.file_uploader("Upload your power curve CSV", type="csv")
+uploaded_power_curve = col2.file_uploader("Upload your power duration CSV", type="csv")
 if uploaded_power_curve is not None:
     # Read the uploaded file into a DataFrame
     input_df = pd.read_csv(uploaded_power_curve)
@@ -537,7 +512,7 @@ fig.update_layout(
 
 # Display the chart in Streamlit
 st.plotly_chart(fig, use_container_width=True)
-st.caption("The black line shows your power curve, while colored lines refers to the percentile "
+st.caption("The black line shows your power duration relationship, while colored lines refers to the percentile "
            "of riders of the selected gender based on the data from David Johnstone: "
            "https://www.cyclinganalytics.com/blog/2018/06/how-does-your-cycling-power-output-compare")
 
@@ -592,12 +567,12 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
 
     # battery model 
     with st.expander("Advanced settings"):
-        st.caption("Both battery models are displayed as a percentage and both consider the power duration relationship, but the calculation behind it differs. " 
-                "The 'Percent' model is based on a percentage drain and the 'Energy' model is on the basis of the Critical Power (CP) and W', thus it calculates the individual available energy and "
-                "substracts the Watts above the CP from the energy.")
+        st.caption("All battery models are displayed as a percentage and both consider the power duration relationship, but the calculation behind it differs. " 
+                "The 'Percent' model is based on a percentage drain and the 'Energy' and the 'Critical Power' models consider a starting energy (J)."
+                " How the calculations between those two models differ is explained in the caption of the respective model.")
 
         col1, col2 = st.columns([1, 3], vertical_alignment="top")
-        battery_model = col1.radio("Choose the battery model:", ["Percent", "Energy"])
+        battery_model = col1.radio("Choose the battery model:", ["Percent", "Energy", "Critical Power"])
             
         bat_slope = col1.radio(
             "Choose the color scale:",
@@ -617,19 +592,69 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
 
             # Calculate the battery level
             df['battery'] = get_battery(df, interpolated_df)
-        else:
-            treshold = col2.slider("Considered Critical Power value (in % of FTP)", 50, 150, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that above this power level the energy will be drained.")
-            treshold = treshold / 100
-            interpolated_df = get_interpolated_power_curve(power_df,100, treshold)
-            col2.caption(f"considered Critical Power: {interpolated_df['Watts'].min()} W")
 
-            # Calculate the battery level
-            df['battery'] = get_energy_battery(df, interpolated_df)
+            dashed_line_val = power_df.loc[power_df['seconds'] == 3600, 'Watts'].values[0]
+            dashed_line_name = 'FTP'
+        elif battery_model == 'Energy':
+            col2.write("Energy E0 and Power P0 are calculated as the intercept and slope of the energy over time, respectively.")
+            cp_treshold = col2.slider("Value where the battery recharges (% Critical Power)", 50, 100, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that below this power level the battery will recharge.")
+            cp_treshold = cp_treshold / 100
+            power_df['energy'] = power_df['Watts'] * power_df['seconds']
+
+            # intercept = energy and slope = critical power
+            cp, energy = np.polyfit(power_df['seconds'], power_df['energy'], 1)
+
+            battery = [energy]
+
+            for val in df['power']:
+                if val < cp*cp_treshold or val >= cp:
+                    battery.append(battery[-1] + (cp - val))
+                else:
+                    battery.append(battery[-1])
+
+            col2.caption(f"Energy (E0): {energy/1000:.1f} kJ, Power P0: {cp:.1f} W, Recharge treshold: {cp*cp_treshold:.1f} W")
+            
+            battery = battery[:-1] / energy * 100
+            df['battery'] = battery
+
+            dashed_line_val = cp
+            dashed_line_name = 'P0'
+        else:
+            col2.write("Critical Power (CP) and W' are calculated based on the 1 min, 5min and 12 min efforts. "
+                        "CP and W' are calculated as the intercept and slope of the power over 1/time, respectively.")
+            
+            cp_treshold = col2.slider("Value where the battery recharges (% Critical Power)", 0, 100, value=100, step=5, help="Adjust the Critical Power value in % of FTP. This means that below this power level the battery will recharge.")
+            cp_treshold = cp_treshold / 100
+            
+            times = [60, 300, 720]
+            x = 1 / np.array(times)
+            y = power_df.loc[power_df['seconds'].isin(times), 'Watts']
+
+            # slope = energy and intercept = critical power
+            energy, cp = np.polyfit(x, y, 1)
+
+            battery = [energy]
+
+            for val in df['power']:
+                if val < cp*cp_treshold or val >= cp:
+                    battery.append(battery[-1] + (cp - val))
+                else:
+                    battery.append(battery[-1])
+
+            col2.caption(f"Energy (W'): {energy/1000:.1f} kJ, CP: {cp:.1f} W, Recharge treshold: {cp*cp_treshold:.1f} W")
+            
+            battery = battery[:-1] / energy * 100
+            df['battery'] = battery
+
+            dashed_line_val = cp
+            dashed_line_name = 'Critical Power'
+
 
     df = append_slope(df)
 
     # Determine the scale for the battery plot
-    battery_scale = df['battery'].min() if df['battery'].min() < 0 else 0
+    battery_scale_low = df['battery'].min() if df['battery'].min() < 0 else 0
+    battery_scale_up = df['battery'].max() if df['battery'].max() > 105 else 105
 
     # Create a figure with secondary y-axis
     battery_fig = go.Figure()
@@ -693,18 +718,30 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         )
 
 
-    ftp_value = power_df.loc[power_df['seconds'] == 3600, 'Watts'].values[0]
+    
 
     battery_fig.add_shape(
         type="line",
         x0=df['formatted_time'].min(),  # Start from the minimum time
         x1=df['formatted_time'].max(),  # End at the maximum time
-        y0=ftp_value,  # y position at ftp_value
-        y1=ftp_value,  # y position at ftp_value
+        y0=dashed_line_val,  
+        y1=dashed_line_val,  
         line=dict(color="grey", width=2, dash="dash"),  # Line properties
-        name="FTP",
+        name=dashed_line_name,
         showlegend=True
     )
+
+    if battery_model in ['Energy', 'Critical Power'] and cp_treshold < 1:
+        battery_fig.add_shape(
+            type="line",
+            x0=df['formatted_time'].min(),  # Start from the minimum time
+            x1=df['formatted_time'].max(),  # End at the maximum time
+            y0=dashed_line_val*cp_treshold,  
+            y1=dashed_line_val*cp_treshold,  
+            line=dict(color="grey", width=2, dash="dash"),  # Line properties
+            name='Recharge treshold',
+            showlegend=True
+        )
 
     battery_fig.update_xaxes(nticks=8)
 
@@ -722,7 +759,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             position=0.95,  # Adjust position to avoid overlap with y2
             showgrid=False,
             zeroline=False,
-            range=[battery_scale, 105]
+            range=[battery_scale_low, battery_scale_up]
         ),
         legend=dict(
             orientation="h",  # Horizontal legend
@@ -750,6 +787,8 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     battery_level = df.iloc[-1]['battery']
     if battery_level <3:
         battery_level_axis = 3
+    elif battery_level > 100:
+        battery_level_axis = 100
     else:
         battery_level_axis = battery_level
 
@@ -829,23 +868,22 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
     max_power = df['power'].max()
     bins = np.arange(0, max_power + bin_size, bin_size)
 
+    counts, bin_edges = np.histogram(df['power'], bins=bins)
+
     # Create a histogram with Plotly using predefined bins
     fig = go.Figure()
 
     if 'Time' in radio_time_perc:
-        y_title = 'Time (seconds)'
-        hist = go.Histogram(
-            x=df['power'],
-            xbins=dict(
-                start=bins[0],
-                end=bins[-1],
-                size=bin_size
-            ),
+        y_title = 'Time (min)'
+        bar_plot = go.Bar(
+            x=bin_edges[:-1],  # Left edges of each bin
+            y=counts/60,  # Heights of the bars
+            width=bin_size,  # Width of each bar
             marker=dict(color='darkturquoise'),
             name='ride',
-            hovertemplate='<b>%{x} W</b><br>%{y:.0f} sec<extra></extra>'  # Display cumulative time in minutes
+            hovertemplate='<b>%{x} W</b><br>%{y:.1f} min<extra></extra>'  # Customize hover info
         )
-        fig.add_trace(hist)
+        fig.add_trace(bar_plot)
     else:
         y_title = 'Percentage (%)'
         fig.add_trace(go.Histogram(
@@ -866,13 +904,25 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         y=power_df['description'],
         x=power_df['Watts'],
         mode='lines+markers',  # Line with markers for interactivity
-        name='power curve',  # Name of the trace for the legend
+        name='power duration curve',  # Name of the trace for the legend
         line=dict(color='black', width=2),  # Line styling
         marker=dict(size=5),  # Marker styling
         hoverinfo='text',  # Hover information
         hovertext=[f"{desc}: {value:.1f} W" for value, desc in zip(power_df['Watts'], power_df['description'])],
         yaxis='y2'
     ))
+
+    fig.add_shape(
+        type="line",
+        x0=dashed_line_val,
+        y0=-1,
+        x1=dashed_line_val,
+        y1=10,  
+        line=dict(color="grey", width=2, dash="dash"),  # Line properties
+        name=dashed_line_name,
+        showlegend=True,
+        yref='y2'
+    )
 
     fig.update_layout(
         xaxis=dict(
@@ -890,30 +940,31 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
             zeroline=False,
             tickfont=dict(color='black')
         ),
-        bargap=0.2,
+        bargap=0.05,
         legend=dict(
             orientation="h",  # Horizontal legend
             x=0.5,  # Center horizontally
             xanchor="center",  # Align center
             y=1.0,  # Position above the plot
             yanchor="bottom"  # Anchor to bottom
-        ),
-        shapes=[  # Add a vertical dashed line
-            dict(
-                xref='x',
-                yref='y2',
-                type='line',
-                x0=ftp_value,
-                y0=-1,
-                x1=ftp_value,
-                y1=10,
-                line=dict(
-                    color='grey',
-                    width=2,
-                    dash='dash'  # Dashed line style
-                )
-            )
-        ]
+        )
+        # shapes=[  # Add a vertical dashed line
+        #     dict(
+        #         xref='x',
+        #         yref='y2',
+        #         type='line',
+        #         x0=dashed_line_val,
+        #         y0=-1,
+        #         x1=dashed_line_val,
+        #         y1=10,
+        #         name=dashed_line_name,
+        #         line=dict(
+        #             color='grey',
+        #             width=2,
+        #             dash='dash'  # Dashed line style
+        #         )
+        #     )
+        # ]
     )
 
     # Display the plot
@@ -1109,7 +1160,7 @@ if uploaded_fit_file is not None and (power_df['Watts'] > 0).all():
         )
 
 elif not (power_df['Watts'] > 0).all():
-    st.write('Please enter the power curve data above.')
+    st.write('Please enter the power duration data above.')
 elif uploaded_fit_file is None:
     st.write("Please upload a FIT file (on the left side). Afterwards you can proceed with the analysis of your ride.")
 
